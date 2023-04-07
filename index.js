@@ -1,5 +1,12 @@
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config();
+}
+
 const express = require("express");
 const app = express();
+
+// import the model
+const Person = require("./models/person");
 
 const morgan = require("morgan");
 
@@ -55,8 +62,11 @@ app.get("/", (req, res) => {
 });
 
 // get info
-app.get("/api/info", (req, res) => {
-  const numPersons = persons.length;
+app.get("/api/info", async (req, res) => {
+  // change this to read from MongoDB
+
+  //const numPersons = persons.length;
+  const numPersons = await Person.countDocuments();
 
   const date = new Date();
   const dataToSend = `
@@ -69,7 +79,10 @@ app.get("/api/info", (req, res) => {
 
 // get all persons
 app.get("/api/persons", (req, res) => {
-  res.json(persons);
+  //res.json(persons);
+  Person.find({}).then((persons) => {
+    res.json(persons);
+  });
 });
 
 const generateId = () => {
@@ -77,10 +90,10 @@ const generateId = () => {
 };
 
 // create a person
-app.post("/api/persons", (req, res) => {
+app.post("/api/persons", (req, res, next) => {
   const body = req.body;
 
-  if (!body.name || !body.number) {
+  if (body.name === undefined || body.number === undefined) {
     return res.status(400).json({
       error: "content missing",
     });
@@ -89,28 +102,33 @@ app.post("/api/persons", (req, res) => {
   const nameToCheck = body.name;
   console.log(nameToCheck);
 
-  if (!persons.find((person) => person.name === nameToCheck)) {
-    const person = {
-      name: body.name,
-      number: body.number,
-      id: generateId(),
-    };
+  // find the document by name
+  const personSearch = Person.findOne({ name: nameToCheck }).then((person) => {
+    if (person) {
+      console.log("found", person);
+    } else {
+      console.log("adding new person");
+      const person = new Person({
+        name: body.name,
+        number: body.number,
+      });
 
-    persons = persons.concat(person);
-    console.log(person);
-    res.json(person);
-  } else {
-    return res.status(400).json({
-      error: "name must be unique",
-    });
-  }
+      // save the person
+      person
+        .save()
+        .then((savedPerson) => {
+          res.json(savedPerson);
+        })
+        .catch((error) => next(error));
+    }
+  });
 });
 
 // get one person
-app.get("/api/persons/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const person = persons.find((person) => person.id === id);
-
+// use the DB
+app.get("/api/persons/:id", async (req, res) => {
+  const id = req.params.id;
+  const person = await Person.findById(id);
   if (person) {
     res.json(person);
   } else {
@@ -119,13 +137,61 @@ app.get("/api/persons/:id", (req, res) => {
 });
 
 // delete a person
-app.delete("/api/persons/:id", (req, res) => {
-  const id = Number(req.params.id);
-  console.log(id);
-  persons = persons.filter((person) => person.id !== id);
+// using findByIdAndRemove
+app.delete("/api/persons/:id", (req, res, next) => {
+  // const id = Number(req.params.id);
+  // console.log(id);
+  // persons = persons.filter((person) => person.id !== id);
 
-  res.status(204).end();
+  // res.status(204).end();
+  Person.findByIdAndRemove(req.params.id)
+    .then((result) => {
+      res.status(204).end();
+    })
+    .catch((error) => next(error));
 });
+
+// update a person
+app.put("/api/persons/:id", (req, res, next) => {
+  const body = req.body;
+  const person = {
+    name: body.name,
+    number: body.number,
+  };
+
+  // add validations when updating
+  Person.findByIdAndUpdate(req.params.id, person, {
+    new: true,
+    runValidators: true,
+    context: "query",
+  })
+    .then((updatedPerson) => {
+      res.json(updatedPerson);
+    })
+    .catch((error) => next(error));
+});
+
+// unknown route handler - second to last to use
+// this should come after the routes
+const unknownEndpoint = (request, response) => {
+  response.status(404).send({ error: "unknown endpoint" });
+};
+
+app.use(unknownEndpoint);
+
+// error handler - last one to use
+// this should be the last middleware loaded
+const errorHandler = (error, request, response, next) => {
+  console.error(error.message);
+  if (error.name === "CastError") {
+    return response.status(400).send({ error: "malformed id" });
+  } else if (error.name === "ValidationError") {
+    return response.status(400).send({ error: error.message });
+  }
+  next(error);
+};
+
+app.use(errorHandler);
 
 // listening
 const PORT = process.env.PORT || 3002;
